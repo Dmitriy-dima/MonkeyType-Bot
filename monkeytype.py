@@ -8,8 +8,9 @@ from pynput.keyboard import Controller, Key
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
-import tkinter as tk
 from tkinter import messagebox, ttk
+from collections import deque
+import tkinter as tk
 
 # Загрузка состояния из файла
 state_file = "state.json"
@@ -22,10 +23,10 @@ else:
 CHROMEDRIVER_PATH = 'path_to_chromedriver'  # Replace with the path to your chromedriver executable
 remaining_text = None
 global_driver = None
-typed_words = set()
+typed_words = deque()
 
 def fetch_text_from_website(url):
-    global global_driver
+    global global_driver, typed_words
     status_var.set("Статус: Получение текста...")  # Update status
     try:
         # Always close the existing WebDriver session if it exists
@@ -36,19 +37,19 @@ def fetch_text_from_website(url):
         global_driver.get(url)
         time.sleep(2)  # Allow time for the page to load
         word_elements = global_driver.find_elements(By.CSS_SELECTOR, '.word')
-        words = [word.text for word in word_elements]
-
-        return words    
+        words = deque([word.text for word in word_elements]) 
+        typed_words.extend([word.text for word in word_elements])
+        return words
     except Exception as e:
         messagebox.showerror("Error", f"Произошла ошибка при получении текста: {str(e)}")
         return []
 
 
 def type_text(words, wpm, error_rate, language='en'):
-    global stop_flag, remaining_text
+    global stop_flag, remaining_text, typed_words
     keyboard = Controller()
     typed_words.clear()
-
+    
     character_mappings = {
         'en': 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ ',
         'ru': 'абвгдеёжзийклмнопрстуфхцчшщъыьэюяАБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ '
@@ -58,7 +59,7 @@ def type_text(words, wpm, error_rate, language='en'):
     char_delay = 60 / (wpm * 5)  # Assuming average word length of 5
 
     while words:
-        word = words.pop(0)
+        word = words.popleft()
         for i, char in enumerate(word):
             if stop_flag:
                 remaining_text = words
@@ -66,9 +67,16 @@ def type_text(words, wpm, error_rate, language='en'):
             if random.random() < error_rate:
                 random_char = random.choice(character_mappings[language])
                 if random.random() < 0.5:  # Additional condition for double press
-                    word = word[:i] + random_char + word[i]
+                    if i == len(word):
+                        word = word + random_char
+                    else:
+                        word = word[:i] + random_char + word[i]
                 else:
-                    word = word[:i] + random_char + word[i + 1:]
+                    if i == len(word):
+                        word = word[:-1] + random_char
+                    else:
+                        word = word[:i] + random_char + word[i + 1:]
+        typed_words.append(word)
         for char in word:
             if stop_flag:
                 return
@@ -106,6 +114,7 @@ def start_typing():
         # Запуск type_text в отдельном потоке
         typing_thread = threading.Thread(target=type_text, args=(text_to_type, typing_speed_wpm, error_rate, language))
         typing_thread.start()
+        
 
 def stop_typing():
     global stop_flag, global_driver
@@ -115,9 +124,12 @@ def stop_typing():
 
 
 def quit():
+    close_driver()
     window.quit()
 
 def close_driver():
+    global stop_flag, global_driver
+    stop_flag = True
     if global_driver:
         global_driver.quit()
         global_driver = None
@@ -126,6 +138,8 @@ def close_driver():
 window = tk.Tk()
 window.title("Monkey Type Bot")
 window.geometry("450x300")
+
+window.protocol("WM_DELETE_WINDOW", quit)
 
 frame = ttk.Frame(window, padding="10")
 frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
