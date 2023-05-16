@@ -4,11 +4,10 @@ import threading
 import keyboard
 import time
 import random
-from selenium.webdriver.common.by import By
 from pynput.keyboard import Controller, Key
 from selenium import webdriver
+from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
 import tkinter as tk
 from tkinter import messagebox, ttk
 
@@ -20,65 +19,73 @@ if os.path.exists(state_file):
 else:
     state = {}
 
-CHROMEDRIVER_PATH = 'path_to_chromedriver'  # Замените на путь к исполняемому файлу chromedriver
+CHROMEDRIVER_PATH = 'path_to_chromedriver'  # Replace with the path to your chromedriver executable
 remaining_text = None
+global_driver = None
+typed_words = set()
 
 def fetch_text_from_website(url):
-    options = Options()
-    options.add_argument("--headless")
-    status_var.set("Статус: Получение текста...")  # Обновить статус
+    global global_driver
+    status_var.set("Статус: Получение текста...")  # Update status
     try:
-        with webdriver.Chrome(service=Service(CHROMEDRIVER_PATH), options=options) as driver:
-            driver.get(url)
-            time.sleep(2)  # Даёт время на загрузку страницы
+        # Always close the existing WebDriver session if it exists
+        if global_driver:
+            global_driver.quit()  # Use quit instead of close to ensure the entire browser is closed
+        # Always start a new WebDriver session
+        global_driver = webdriver.Chrome(service=Service(CHROMEDRIVER_PATH))
+        global_driver.get(url)
+        time.sleep(2)  # Allow time for the page to load
+        word_elements = global_driver.find_elements(By.CSS_SELECTOR, '.word')
+        words = [word.text for word in word_elements]
 
-            paragraphs = driver.find_elements(By.TAG_NAME, 'p')
-            text = ' '.join(paragraph.text for paragraph in paragraphs)
-
-            return text.strip()
+        return words    
     except Exception as e:
         messagebox.showerror("Error", f"Произошла ошибка при получении текста: {str(e)}")
-        return None
+        return []
 
-def type_text(text, wpm, error_rate, language='en'):
+
+def type_text(words, wpm, error_rate, language='en'):
     global stop_flag, remaining_text
     keyboard = Controller()
+    typed_words.clear()
 
-    # Сопоставление символов для английского и русского языков
     character_mappings = {
         'en': 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ ',
         'ru': 'абвгдеёжзийклмнопрстуфхцчшщъыьэюяАБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ '
     }
 
-    # Вычисление задержки набора текста на основе желаемой скорости в минуту
-    word_delay = 60 / wpm
+    # Calculate delay between each character based on desired wpm
+    char_delay = 60 / (wpm * 5)  # Assuming average word length of 5
 
-    for word in text.split():
+    while words:
+        word = words.pop(0)
         for i, char in enumerate(word):
             if stop_flag:
-                remaining_text = ' '.join([word] + text.split()[1:])
-                return  # Прекращение набора текста, если установлен флаг
+                remaining_text = words
+                return
             if random.random() < error_rate:
                 random_char = random.choice(character_mappings[language])
-                word = word[:i] + random_char + word[i + 1:]
+                if random.random() < 0.5:  # Additional condition for double press
+                    word = word[:i] + random_char + word[i]
+                else:
+                    word = word[:i] + random_char + word[i + 1:]
         for char in word:
             if stop_flag:
                 return
             keyboard.press(char)
             keyboard.release(char)
-            time.sleep(0.02)  # время между нажатием и отпусканием символа
+            time.sleep(char_delay)  # Delay between each character
         if stop_flag:
             return
         keyboard.press(Key.space)
         keyboard.release(Key.space)
-        time.sleep(word_delay)  # время между словами
-
     remaining_text = None
-    window.after(0, lambda: status_var.set("Статус: Закончил набор текста")) # Обновить статус
+    window.after(0, lambda: status_var.set("Статус: Закончил набор текста"))  # Update status
+
 
 def start_typing():
-    global stop_flag, remaining_text
-    stop_flag = False  # Сбросить флаг остановки
+    global stop_flag
+    stop_flag = False  # Reset the stop flag
 
     website_url = url_entry.get()
     try:
@@ -87,13 +94,10 @@ def start_typing():
     except ValueError:
         messagebox.showerror("Error", "Неверная скорость набора текста или процент ошибок. Пожалуйста, введите числовые значения.")
         return
-
     language = language_var.get()
+
+    # Always fetch new text from the website
     text_to_type = fetch_text_from_website(website_url)
-    if remaining_text:
-        text_to_type = remaining_text
-    else:
-        text_to_type = fetch_text_from_website(website_url)
 
     if text_to_type:
         status_var.set("Статус: Начинаем печатать...")  # Обновить статус
@@ -104,13 +108,20 @@ def start_typing():
         typing_thread.start()
 
 def stop_typing():
-    global stop_flag, remaining_text
-    if stop_flag == False:
-      stop_flag = True  # Установка флага остановки
-      status_var.set("Статус: Набор текста прекращен")  # Обновить статус
+    global stop_flag, global_driver
+    stop_flag = True
+    status_var.set("Статус: Набор текста прекращен")
+    close_driver()
+
 
 def quit():
     window.quit()
+
+def close_driver():
+    if global_driver:
+        global_driver.quit()
+        global_driver = None
+
 # GUI
 window = tk.Tk()
 window.title("Monkey Type Bot")
@@ -154,7 +165,7 @@ for i, (option_text, option_value) in enumerate(language_options):
 start_button = ttk.Button(frame, text="Начать печатать", command=start_typing)
 start_button.grid(row=4, column=0, columnspan=2, pady=10)
 
-start_hotkey_description = ttk.Label(frame, text="Hotkey: Ctrl + T")
+start_hotkey_description = ttk.Label(frame, text="Hotkey: Z")
 start_hotkey_description.grid(row=4, column=2, padx=10)
 
 window.columnconfigure(0, weight=1)
@@ -165,7 +176,7 @@ frame.columnconfigure(1, weight=1)
 stop_button = ttk.Button(frame, text="Перестать печатать", command=stop_typing)
 stop_button.grid(row=5, column=0, columnspan=2, pady=10)
 
-stop_hotkey_description = ttk.Label(frame, text="Hotkey: Ctrl + X")
+stop_hotkey_description = ttk.Label(frame, text="Hotkey: X")
 stop_hotkey_description.grid(row=5, column=2, padx=10)
 
 # Кнопка выхода
@@ -214,12 +225,13 @@ save_state_button = ttk.Button(frame, text="Сохранить Состояни�
 save_state_button.grid(row=11, column=0, columnspan=2, pady=10)
 
 # Привязать горячие клавиши
-keyboard.add_hotkey('ctrl + t', start_typing)  # Control + T для начала
-keyboard.add_hotkey('ctrl + x', stop_typing)  # Control + X для остановки
+keyboard.add_hotkey('z', start_typing)  # Control + T для начала
+keyboard.add_hotkey('x', stop_typing)  # Control + X для остановки
 keyboard.add_hotkey('ctrl + q', quit)  # Control + Q для выхода
 
 keyboard.add_hotkey('ctrl+c', copy_text)
 keyboard.add_hotkey('ctrl+v', paste_text)
+
 
 # Состояние загрузки
 url_entry.insert(0, state.get("url", ""))
